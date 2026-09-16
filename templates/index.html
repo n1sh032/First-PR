@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>First PR</title>
+</head>
+<body>
+    <h1>First PR</h1>
+    <p>paste a github repo url and ill check its status</p>
+
+    <form method="POST">
+        <input type="text" name="repo_url" placeholder="https://github.com/owner/repo" style="width:300px">
+        <button type="submit">check</button>
+    </form>
+
+    {% if error %}
+        <p style="color:red">{{ error }}</p>
+    {% endif %}
+
+    {% if result %}
+        <ul>
+            <li>archived: {{ result.archived }}</li>
+            <li>fork: {{ result.fork }}</li>
+            <li>has_issues: {{ result.has_issues }}</li>
+        </ul>
+    {% endif %}
+</body>
+</html>
