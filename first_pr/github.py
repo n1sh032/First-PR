@@ -122,3 +122,83 @@ def should_reject_for_assignment(issue):
     # assigned AND recently touched = someone's probably actively on it, reject
     # assigned but stale = effectively abandoned, dont reject just for having a name on it
     return not is_abandoned_assignment(issue)
+
+GLOBAL_DEFAULT_STALENESS_DAYS = 14 # used when a repo doesnt have enough closed-issue history to trust its own number
+MIN_SAMPLE_SIZE = 5
+
+def get_closed_issues(owner, name, needed=15, max_pages=5):
+    # issues endpoint mixes in closed PRs too, and for active repos PRs dominate
+    # so gotta keep paging until we actually have enough REAL issues, not just enough items
+    results = []
+    page = 1
+
+    while len(results) < needed and page <= max_pages:
+        url = f"https://api.github.com/repos/{owner}/{name}/issues"
+        params = {"state": "closed", "per_page": 30, "page": page}
+        r = requests.get(url, headers={"Authorization": f"Bearer {TOKEN}"}, params=params)
+        if r.status_code != 200:
+            print("closed issues fetch failed", r.status_code)
+            break
+
+        batch = r.json()
+        if len(batch) == 0:
+            break # ran out of pages
+
+        real_issues = [i for i in batch if "pull_request" not in i]
+        results.extend(real_issues)
+        page += 1
+
+    return results[:needed]
+
+
+def get_first_comment_time(owner, name, issue_number, issue_author):
+    url = f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}/comments"
+    r = requests.get(url, headers={"Authorization": f"Bearer {TOKEN}"}, params={"per_page": 20})
+    if r.status_code != 200:
+        return None
+    comments = r.json()
+
+    for c in comments:
+        # self-replies (author adding more info to their own issue) dont count as
+        # a "response" from the repo, was skewing the median way down
+        if c["user"]["login"] != issue_author:
+            return c["created_at"]
+
+    return None # nobody but the author ever commented
+
+def get_response_threshold(owner, name):
+    # returns (threshold_in_days, used_fallback)
+    closed = get_closed_issues(owner, name)
+    times = []
+
+    for issue in closed:
+        first = get_first_comment_time(owner, name, issue["number"], issue["user"]["login"])
+        if first is None:
+            continue
+
+        created = datetime.strptime(issue["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        commented = datetime.strptime(first, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        days = (commented - created).total_seconds() / 86400
+        if days >= 0:
+            times.append(days)
+    print(f"debug: got {len(times)} usable response times out of {len(closed)} closed issues checked")
+
+    if len(times) < MIN_SAMPLE_SIZE:
+        return GLOBAL_DEFAULT_STALENESS_DAYS, True # not enough data, be honest about it
+
+    times.sort()
+    mid = len(times) // 2
+    if len(times) % 2 == 0:
+        median = (times[mid - 1] + times[mid]) / 2
+    else:
+        median = times[mid]
+
+    return median, False
+
+
+def is_stale(issue, threshold_days):
+    updated = datetime.strptime(issue["updated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    days_since = (datetime.now(timezone.utc) - updated).total_seconds() / 86400
+    # "stale" shouldnt mean literally = median, that would reject half of everything
+    # picked 3x as a "way beyond normal" cutoff, plan doesnt give an actual number for this
+    return days_since > (threshold_days * 3)
