@@ -1,5 +1,7 @@
 import requests
 import os
+import re
+
 
 TOKEN = os.environ.get("GITHUB_TOKEN")
 
@@ -70,6 +72,33 @@ def get_linked_prs(owner, name, issue_number):
 def has_open_linked_pr(owner, name, issue_number):
     prs = get_linked_prs(owner, name, issue_number)
     for p in prs:
-        if p["state"] == "open": # draft prs are still "open" state on github, this catches both
+        if p["state"] == "open": # covers drafts too
             return True
+
+    # nothing in the official timeline, try the messier regex approach before giving up
+    informal = find_informal_links(owner, name, issue_number)
+    if len(informal) > 0:
+        return True
+
     return False
+def get_open_prs(owner, name):
+    url = f"https://api.github.com/repos/{owner}/{name}/pulls"
+    params = {"state": "open", "per_page": 50}
+    r = requests.get(url, headers={"Authorization": f"Bearer {TOKEN}"}, params=params)
+    if r.status_code != 200:
+        print("pr fetch failed", r.status_code)
+        return []
+    return r.json()
+
+
+def find_informal_links(owner, name, issue_number):
+    # timeline api misses stuff like "- #123" with no keyword, see KNOWN_LIMITATIONS.md
+    # this just brute force greps open pr titles/bodies for the number instead
+    prs = get_open_prs(owner, name)
+    pattern = re.compile(r"#" + str(issue_number) + r"\b")
+    hits = []
+    for p in prs:
+        blob = (p.get("title") or "") + " " + (p.get("body") or "")
+        if pattern.search(blob):
+            hits.append({"number": p["number"], "state": p["state"], "draft": p.get("draft", False)})
+    return hits
