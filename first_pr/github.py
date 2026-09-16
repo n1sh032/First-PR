@@ -1,6 +1,7 @@
 import requests
 import os
 import re
+from datetime import datetime, timezone
 
 
 TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -102,3 +103,22 @@ def find_informal_links(owner, name, issue_number):
         if pattern.search(blob):
             hits.append({"number": p["number"], "state": p["state"], "draft": p.get("draft", False)})
     return hits
+ABANDONED_DAYS = 30 # if assigned but nothing moved in this long, treat as fair game again
+
+def is_abandoned_assignment(issue):
+    if issue.get("assignee") is None:
+        return False # not assigned at all, this check doesnt even apply
+
+    updated = issue["updated_at"] # format like 2024-05-01T12:00:00Z
+    updated_dt = datetime.strptime(updated, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    days_since = (datetime.now(timezone.utc) - updated_dt).days
+
+    return days_since > ABANDONED_DAYS
+
+
+def should_reject_for_assignment(issue):
+    if issue.get("assignee") is None:
+        return False
+    # assigned AND recently touched = someone's probably actively on it, reject
+    # assigned but stale = effectively abandoned, dont reject just for having a name on it
+    return not is_abandoned_assignment(issue)
